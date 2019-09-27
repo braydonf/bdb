@@ -24,6 +24,8 @@ describe('BDB', function() {
   });
 
   after(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
     await db.close();
     assert.equal(db.loaded, false);
   });
@@ -160,5 +162,49 @@ describe('BDB', function() {
         assert.equal(index, vectors[i].key[1]);
       }
     });
+  });
+
+  describe('thread safety', function() {
+    async function checkError(method) {
+      const batch = db.batch();
+      const hash = Buffer.alloc(20, 0x11);
+
+      const value = Buffer.alloc(1024 * 1024);
+      const key = tkey.encode(hash, 12);
+
+      batch.put(key, value);
+      batch.write();
+
+      let err = null;
+
+      try {
+        switch (method) {
+          case 'clear':
+            batch.clear();
+            break;
+          case 'put':
+            batch.put(key, value);
+            break;
+          case 'del':
+            batch.del(key);
+            break;
+          case 'write':
+            await batch.write();
+            break;
+        }
+
+      } catch (e) {
+        err = e;
+      }
+
+      assert(err);
+      assert.equal(err.message, 'Batch already writing.');
+    }
+
+    for (const method of ['clear', 'put', 'del', 'write']) {
+      it(`will throw lock error for ${method}`, async () => {
+        await checkError(method);
+      });
+    }
   });
 });
