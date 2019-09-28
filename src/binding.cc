@@ -344,7 +344,8 @@ struct Database {
       filterPolicy_(leveldb::NewBloomFilterPolicy(10)),
       currentIteratorId_(0),
       pendingCloseWorker_(NULL),
-      priorityWork_(0) {}
+      priorityWork_(0),
+      shareCount_(0) {}
 
   ~Database () {
     if (db_ != NULL) {
@@ -441,6 +442,19 @@ struct Database {
     return priorityWork_ > 0;
   }
 
+  void Share () {
+    shareCount_ += 1;
+  }
+
+  void Unshare () {
+    if (shareCount_ > 0)
+      shareCount_ -= 1;
+  }
+
+  bool IsShared () {
+    return (bool)(shareCount_ > 0);
+  }
+
   napi_env env_;
   leveldb::DB* db_;
   leveldb::Cache* blockCache_;
@@ -451,6 +465,7 @@ struct Database {
 
 private:
   uint32_t priorityWork_;
+  uint32_t shareCount_;
 };
 
 /**
@@ -866,6 +881,13 @@ NAPI_METHOD(db_close) {
   NAPI_DB_CONTEXT();
 
   napi_value callback = argv[1];
+
+  if (database->IsShared()) {
+    napi_value argv = CreateError(env, "Unsafe database close.");
+    CallFunction(env, callback, 1, &argv);
+    NAPI_RETURN_UNDEFINED();
+  }
+
   CloseWorker* worker = new CloseWorker(env, database, callback);
 
   if (!database->HasPriorityWork()) {
@@ -1713,10 +1735,12 @@ struct Batch {
   }
 
   void Share () {
+    database_->Share();
     isShared_ = true;
   }
 
   void Unshare () {
+    database_->Unshare();
     isShared_ = false;
   }
 
@@ -1765,7 +1789,7 @@ NAPI_METHOD(batch_put) {
     DisposeSliceBuffer(key);
     DisposeSliceBuffer(value);
   } else {
-    napi_throw_error(env, 0, "Batch already writing.");
+    napi_throw_error(env, 0, "Unsafe batch put.");
   }
 
   NAPI_RETURN_UNDEFINED();
@@ -1783,7 +1807,7 @@ NAPI_METHOD(batch_del) {
     batch->Del(key);
     DisposeSliceBuffer(key);
   } else {
-    napi_throw_error(env, 0, "Batch already writing.");
+    napi_throw_error(env, 0, "Unsafe batch del.");
   }
 
   NAPI_RETURN_UNDEFINED();
@@ -1799,7 +1823,7 @@ NAPI_METHOD(batch_clear) {
   if (!batch->IsShared()) {
     batch->Clear();
   } else {
-    napi_throw_error(env, 0, "Batch already writing.");
+    napi_throw_error(env, 0, "Unsafe batch clear.");
   }
 
   NAPI_RETURN_UNDEFINED();
@@ -1827,7 +1851,6 @@ struct BatchWriteWorker final : public PriorityWorker {
 
   void DoExecute () override {
     if (batch_->hasData_) {
-      batch_->Share();
       SetStatus(batch_->Write(sync_));
     }
   }
@@ -1860,7 +1883,7 @@ NAPI_METHOD(batch_write) {
     BatchWriteWorker* worker  = new BatchWriteWorker(env, argv[0], batch, callback, sync);
     worker->Queue();
   } else {
-    napi_value argv = CreateError(env, "Batch already writing.");
+    napi_value argv = CreateError(env, "Unsafe batch write.");
     CallFunction(env, callback, 1, &argv);
   }
 

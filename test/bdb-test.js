@@ -24,8 +24,6 @@ describe('BDB', function() {
   });
 
   after(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
     await db.close();
     assert.equal(db.loaded, false);
   });
@@ -165,7 +163,7 @@ describe('BDB', function() {
   });
 
   describe('thread safety', function() {
-    async function checkError(method) {
+    async function checkError(method, message) {
       const batch = db.batch();
       const hash = Buffer.alloc(20, 0x11);
 
@@ -191,6 +189,9 @@ describe('BDB', function() {
           case 'write':
             await batch.write();
             break;
+          case 'close':
+            await db.close();
+            break;
         }
 
       } catch (e) {
@@ -198,12 +199,21 @@ describe('BDB', function() {
       }
 
       assert(err);
-      assert.equal(err.message, 'Batch already writing.');
+      assert.equal(err.message, message);
+      await new Promise((r) => setTimeout(r, 200));
     }
 
-    for (const method of ['clear', 'put', 'del', 'write']) {
-      it(`will throw lock error for ${method}`, async () => {
-        await checkError(method);
+    const methods = {
+      'clear': 'Unsafe batch clear.',
+      'put': 'Unsafe batch put.',
+      'del': 'Unsafe batch del.',
+      'write': 'Unsafe batch write.',
+      'close': 'Unsafe database close.'
+    };
+
+    for (const [method, message] of Object.entries(methods)) {
+      it(`will check safety of ${method}`, async () => {
+        await checkError(method, message);
       });
     }
   });
