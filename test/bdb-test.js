@@ -189,9 +189,6 @@ describe('BDB', function() {
           case 'write':
             await batch.write();
             break;
-          case 'close':
-            await db.close();
-            break;
         }
 
       } catch (e) {
@@ -208,7 +205,6 @@ describe('BDB', function() {
       'put': 'Unsafe batch put.',
       'del': 'Unsafe batch del.',
       'write': 'Unsafe batch write.',
-      'close': 'Unsafe database close.'
     };
 
     for (const [method, message] of Object.entries(methods)) {

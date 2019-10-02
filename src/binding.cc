@@ -292,7 +292,6 @@ struct BaseWorker {
 
   static void Complete (napi_env env, napi_status status, void* data) {
     BaseWorker* self = (BaseWorker*)data;
-    self->SetComplete();
     self->DoComplete();
     self->DoFinally();
     delete self;
@@ -308,8 +307,6 @@ struct BaseWorker {
     napi_get_reference_value(env_, callbackRef_, &callback);
     CallFunction(env_, callback, 1, &argv);
   }
-
-  virtual void SetComplete () {};
 
   virtual void HandleOKCallback () {
     napi_value argv;
@@ -344,8 +341,7 @@ struct Database {
       filterPolicy_(leveldb::NewBloomFilterPolicy(10)),
       currentIteratorId_(0),
       pendingCloseWorker_(NULL),
-      priorityWork_(0),
-      shareCount_(0) {}
+      priorityWork_(0) {}
 
   ~Database () {
     if (db_ != NULL) {
@@ -442,19 +438,6 @@ struct Database {
     return priorityWork_ > 0;
   }
 
-  void Share () {
-    shareCount_ += 1;
-  }
-
-  void Unshare () {
-    if (shareCount_ > 0)
-      shareCount_ -= 1;
-  }
-
-  bool IsShared () {
-    return (bool)(shareCount_ > 0);
-  }
-
   napi_env env_;
   leveldb::DB* db_;
   leveldb::Cache* blockCache_;
@@ -465,7 +448,6 @@ struct Database {
 
 private:
   uint32_t priorityWork_;
-  uint32_t shareCount_;
 };
 
 /**
@@ -881,12 +863,6 @@ NAPI_METHOD(db_close) {
   NAPI_DB_CONTEXT();
 
   napi_value callback = argv[1];
-
-  if (database->IsShared()) {
-    napi_value argv = CreateError(env, "Unsafe database close.");
-    CallFunction(env, callback, 1, &argv);
-    NAPI_RETURN_UNDEFINED();
-  }
 
   CloseWorker* worker = new CloseWorker(env, database, callback);
 
@@ -1735,12 +1711,10 @@ struct Batch {
   }
 
   void Share () {
-    database_->Share();
     isShared_ = true;
   }
 
   void Unshare () {
-    database_->Unshare();
     isShared_ = false;
   }
 
@@ -1841,6 +1815,9 @@ struct BatchWriteWorker final : public PriorityWorker {
     : PriorityWorker(env, batch->database_, callback, "leveldown.batch.write"),
       batch_(batch),
       sync_(sync) {
+        // For thread saftey, consider BatchWrite as shared.
+        batch->Share();
+
         // Prevent GC of batch object before we execute
         NAPI_STATUS_THROWS_VOID(napi_create_reference(env_, context, 1, &contextRef_));
       }
@@ -1855,7 +1832,8 @@ struct BatchWriteWorker final : public PriorityWorker {
     }
   }
 
-  virtual void SetComplete () {
+  void DoFinally () override {
+    database_->DecrementPriorityWork();
     batch_->Unshare();
   }
 
@@ -1879,7 +1857,6 @@ NAPI_METHOD(batch_write) {
     napi_value options = argv[1];
     bool sync = BooleanProperty(env, options, "sync", false);
 
-    batch->Share();
     BatchWriteWorker* worker  = new BatchWriteWorker(env, argv[0], batch, callback, sync);
     worker->Queue();
   } else {
